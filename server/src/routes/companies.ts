@@ -62,7 +62,7 @@ import {
 } from "../services/index.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import type { StorageService } from "../storage/types.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
 
 // A company import can arrive one of two ways on the import + preview routes:
@@ -729,12 +729,25 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       containerRef: { kind: "chunked_zip_upload" },
     });
     if (alreadyCompleted) {
+      // Tell the caller WHERE the prior apply landed. companyId on the run is
+      // written best-effort after apply and the company may have been deleted
+      // since, so this lookup is null-safe and the field stays optional. The
+      // actor key proves this caller ran the original import, but their
+      // access may have been revoked since — withhold the identity unless
+      // they can still reach the company today (hasCompanyAccess, so a
+      // revoked caller sees the same null as a deleted company).
+      const landedCompany = run.companyId && hasCompanyAccess(req, run.companyId)
+        ? await svc.getById(run.companyId)
+        : null;
       res.json({
         transferId: run.id,
         status: "completed",
         alreadyCompleted: true,
         totalParts: declared.parts.length,
         missingParts: [],
+        company: landedCompany
+          ? { id: landedCompany.id, name: landedCompany.name ?? null, issuePrefix: landedCompany.issuePrefix ?? null }
+          : null,
       } satisfies CompanyImportTransferCreated);
       return;
     }

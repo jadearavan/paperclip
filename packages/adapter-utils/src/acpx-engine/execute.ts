@@ -50,6 +50,7 @@ import {
   joinPromptSections,
   materializePaperclipSkillCopy,
   parseObject,
+  isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
@@ -880,7 +881,12 @@ async function resolveSelectedRuntimeSkills(
   const desiredSet = new Set(desiredSkillNames);
   return {
     allSkills,
-    selectedSkills: allSkills.filter((entry) => desiredSet.has(entry.key)),
+    // Missing-source entries never mount: buildSkillSetKey hashes each
+    // selected entry's path contents, and a nonexistent source would abort
+    // runtime construction over one broken skill.
+    selectedSkills: allSkills.filter(
+      (entry) => desiredSet.has(entry.key) && !isPaperclipSkillSourceMissing(entry),
+    ),
     desiredSkillNames,
   };
 }

@@ -27,6 +27,8 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+**UTF-8 text mutations (required):** For every agent `POST`/`PATCH` that carries issue text (`title`, `description`, `comment`, `body`, or `resolutionNote`), serialize JSON once, send its explicit UTF-8 bytes with `Content-Type: application/json; charset=utf-8`, and send `Content-Digest: sha-256=:<base64 SHA-256 of those exact bytes>:`. In Windows PowerShell 5.1, never use string `-Body $json`: use `[Text.Encoding]::UTF8.GetBytes($json)` as `-Body`, with the UTF-8 content type and digest calculated from those same bytes. After a successful response, immediately compare every submitted text field to the authoritative returned resource/comment exactly; any mismatch or `/\?{4,}/` in readback is a failure—throw/stop the workflow and do not continue on the successful HTTP status alone.
+
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:

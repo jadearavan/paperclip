@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiConnectionError, ApiRequestError, PaperclipApiClient } from "../client/http.js";
+import { ApiConnectionError, ApiReadbackMismatchError, ApiRequestError, PaperclipApiClient } from "../client/http.js";
 
 describe("PaperclipApiClient", () => {
   afterEach(() => {
@@ -28,7 +28,50 @@ describe("PaperclipApiClient", () => {
     const headers = call[1].headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer token-123");
     expect(headers["x-paperclip-run-id"]).toBe("run-abc");
-    expect(headers["content-type"]).toBe("application/json");
+    expect(headers["content-type"]).toBe("application/json; charset=utf-8");
+  });
+
+  it("sends JSON mutations as UTF-8 bytes with an explicit charset", async () => {
+    const payload = { body: "Кириллица сохранена" };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+    await expect(client.post("/api/issues/UTF-8/comments", payload)).resolves.toEqual(payload);
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect((request.headers as Record<string, string>)["content-type"]).toBe("application/json; charset=utf-8");
+    expect((request.headers as Record<string, string>)["content-digest"]).toMatch(/^sha-256=:[A-Za-z0-9+/]+=*:/);
+    expect(request.body).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder("utf-8", { fatal: true }).decode(request.body as Uint8Array)).toBe(JSON.stringify(payload));
+  });
+
+  it("stops on a text readback mismatch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ body: "????" }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+
+    await expect(client.post("/api/issues/UTF-8/comments", { body: "Кириллица сохранена" }))
+      .rejects.toBeInstanceOf(ApiReadbackMismatchError);
+  });
+
+  it("checks child and nested interaction text against their authoritative responses", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ issue: { title: "Дочерняя задача", description: "Описание" } }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ interaction: { payload: { prompt: "Нужно решение" }, result: { summaryMarkdown: "Нужно решение" } } }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+
+    await expect(client.post("/api/issues/parent/children", { title: "Дочерняя задача", description: "Описание" })).resolves.toBeTruthy();
+    await expect(client.post("/api/issues/parent/interactions", { payload: { prompt: "Нужно решение" } })).resolves.toBeTruthy();
+  });
+
+  it("rejects an empty response for a recognized text mutation", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+
+    await expect(client.post("/api/issues/parent/interactions", { payload: { prompt: "Нужно решение" } }))
+      .rejects.toBeInstanceOf(ApiReadbackMismatchError);
   });
 
   it("returns null on ignoreNotFound", async () => {

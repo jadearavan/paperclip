@@ -64,6 +64,14 @@ describe("paperclip skill utils", () => {
     await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });
 
+  it("requires UTF-8 bytes, a digest, and exact text readback for agent mutations", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    expect(skillBody).toContain("Content-Type: application/json; charset=utf-8");
+    expect(skillBody).toContain("Content-Digest: sha-256");
+    expect(skillBody).toContain("[Text.Encoding]::UTF8.GetBytes($json)");
+    expect(skillBody).toContain("compare every submitted text field");
+  });
+
   it("documents governed agent interaction resolution invariants", async () => {
     const apiReference = await fs.readFile(path.resolve("skills/paperclip/references/api-reference.md"), "utf8");
     const issueDocs = await fs.readFile(path.resolve("docs/api/issues.md"), "utf8");

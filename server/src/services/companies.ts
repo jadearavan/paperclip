@@ -236,13 +236,13 @@ export function companyService(db: Db) {
     return false;
   }
 
-  async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
+  async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert, database: Db = db) {
     const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
     while (suffix < 10000) {
       const candidate = `${base}${suffixForAttempt(suffix)}`;
       try {
-        const rows = await db
+        const rows = await database
           .insert(companies)
           .values({ ...data, issuePrefix: candidate })
           .returning();
@@ -277,8 +277,14 @@ export function companyService(db: Db) {
     },
 
     create: async (data: typeof companies.$inferInsert) => {
-      const created = await createCompanyWithUniquePrefix(data);
-      await governancePolicies.ensureDefault(created.id);
+      // A company is not runnable until its required policy pointer and first
+      // immutable revision exist. Keep the seed in the same transaction as the
+      // company row so a failed seed cannot leave a heartbeat-capable tenant.
+      const created = await db.transaction(async (tx) => {
+        const company = await createCompanyWithUniquePrefix(data, tx as unknown as Db);
+        await governancePolicies.ensureDefaultInTransaction(tx as unknown as Db, company!.id);
+        return company!;
+      });
       await environmentsSvc.ensureLocalEnvironment(created.id);
       await builtInAgents.autoProvisionBundledAgents(created.id);
       const row = await getCompanyQuery(db)

@@ -5,12 +5,16 @@ export type CompanyGovernancePolicyReadback = {
     id: string;
     revision: number;
     sha256: string;
+    body: string;
+    bindings: Array<Record<string, unknown>>;
     createdAt: string;
   } | null;
   history: Array<{
     id: string;
     revision: number;
     sha256: string;
+    body: string;
+    bindings: Array<Record<string, unknown>>;
     createdAt: string;
   }>;
   targets: Array<{
@@ -29,5 +33,10 @@ export const companyGovernancePolicyApi = {
   get: (companyId: string) =>
     api.get<CompanyGovernancePolicyReadback>(
       `/companies/${encodeURIComponent(companyId)}/governance-policy`,
+    ),
+  restore: (companyId: string, revisionId: string, expectedRevision: number) =>
+    api.post<CompanyGovernancePolicyReadback["active"]>(
+      `/companies/${encodeURIComponent(companyId)}/governance-policy/revisions/${encodeURIComponent(revisionId)}/restore`,
+      { expectedRevision },
     ),
 };

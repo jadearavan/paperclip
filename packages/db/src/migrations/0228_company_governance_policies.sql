@@ -51,8 +51,8 @@ WITH created_policies AS (
 - Send text JSON from Windows PowerShell as UTF-8 bytes with application/json; charset=utf-8, then read it back and compare it. A mismatch or four question marks is a failed mutation.
 - Never set done manually to mask infrastructure, recovery, encoding, sandbox, setup, or cleanup failures.
 $policy$,
-    $json$[{"id":"all-codex-heartbeats","priority":100,"effect":"include","subject":{"type":"all_agents"},"scopes":["heartbeat"],"adapterTypes":["codex_local"],"delivery":"required"}]$json$::jsonb,
-    'a6e65ae99def75347c38e609521412384199da4c0c5690966f385854da1c0057'
+    $json$[{"id":"all-codex-heartbeats","priority":100,"effect":"include","subject":{"type":"all_agents"},"scopes":["heartbeat"],"adapterTypes":["codex_local","paperclip_runner"],"delivery":"required"}]$json$::jsonb,
+    'fda8127cc899c459594052ab1d89282daa88f923010c655b2738f8d600e3623f'
   FROM created_policies
   RETURNING "id", "policy_id"
 )

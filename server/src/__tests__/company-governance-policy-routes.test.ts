@@ -123,5 +123,32 @@ describeEmbeddedPostgres("company governance policy routes", () => {
     expect(await db.select().from(activityLog)).toEqual(expect.arrayContaining([
       expect.objectContaining({ action: "company.governance_policy_replaced", entityType: "company_governance_policy" }),
     ]));
+
+    await request(app)
+      .post(`/companies/${companyId}/governance-policy/revisions/${(await db.select().from(companyGovernancePolicyRevisions))[0]!.id}/restore`)
+      .set("x-test-actor", "board")
+      .send({ expectedRevision: 1 })
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({ revision: 2, body: policy.body }));
+    const readback = await request(app)
+      .get(`/companies/${companyId}/governance-policy`)
+      .set("x-test-actor", "board")
+      .expect(200);
+    expect(readback.body.history.map((revision: { revision: number }) => revision.revision)).toEqual([2, 1]);
+  });
+
+  it("serializes concurrent revision CAS writes into one success and one 409", async () => {
+    const app = await setupApp();
+    await request(app).put(`/companies/${companyId}/governance-policy`)
+      .set("x-test-actor", "board").send(policy).expect(200);
+    const [left, right] = await Promise.all([
+      request(app).put(`/companies/${companyId}/governance-policy`).set("x-test-actor", "board")
+        .send({ ...policy, expectedRevision: 1, body: "# Left policy" }),
+      request(app).put(`/companies/${companyId}/governance-policy`).set("x-test-actor", "board")
+        .send({ ...policy, expectedRevision: 1, body: "# Right policy" }),
+    ]);
+    expect([left.status, right.status].sort()).toEqual([200, 409]);
+    expect([left.body, right.body].find((body) => body.code === "governance_policy_revision_conflict"))
+      .toMatchObject({ currentRevision: 2 });
   });
 });

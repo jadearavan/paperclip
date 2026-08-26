@@ -16216,7 +16216,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
         };
         const adapterContext = { ...context };
-        const governancePolicy = await companyGovernancePolicyService(db).resolveForHeartbeat(agent.companyId, agent.id);
+        const governancePolicies = companyGovernancePolicyService(db);
+        const governanceReadback = await governancePolicies.get(agent.companyId);
+        const governancePolicy = await governancePolicies.resolveForHeartbeat(agent.companyId, agent.id);
+        if (!governanceReadback.active && ["codex_local", "paperclip_runner"].includes(agent.adapterType ?? "")) {
+          throw new HttpError(422, "Required governance policy is missing", {
+            code: "governance_policy_required_missing",
+          });
+        }
         if (governancePolicy) {
           // The snapshot is deliberately independent of the managed role bundle.
           // It is stored before invocation and the adapter receives the exact body
@@ -16228,7 +16235,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             sha256: governancePolicy.sha256,
             bindingId: governancePolicy.bindingId,
             delivery: governancePolicy.delivery,
-            channel: agent.adapterType === "codex_local" ? "developer_instructions" : "unsupported",
+            channel: agent.adapterType === "codex_local"
+              ? "developer_instructions"
+              : agent.adapterType === "paperclip_runner"
+              ? "app_server_base_instructions"
+              : "unsupported",
             precedence: GOVERNANCE_POLICY_PRECEDENCE,
           };
           // Keep durable evidence in the canonical run context. The adapter gets
@@ -16240,7 +16251,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             contextSnapshot: context,
             updatedAt: new Date(),
           }).where(eq(heartbeatRuns.id, run.id));
-          if (governancePolicy.delivery === "required" && agent.adapterType !== "codex_local") {
+          if (governancePolicy.delivery === "required" && !["codex_local", "paperclip_runner"].includes(agent.adapterType ?? "")) {
             throw new HttpError(422, "Required governance policy delivery is unsupported by this adapter", {
               code: "governance_policy_unsupported_delivery",
             });
@@ -16286,6 +16297,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             cwd: executionWorkspace.cwd,
             prompt,
             model: readNonEmptyString(runtimeConfig.model),
+            developerInstructions: governancePolicy?.body ?? "",
             resumeProviderSessionId: runtimeSessionIdForAdapter,
             completionContract: native.completionContract,
             timeoutMs,

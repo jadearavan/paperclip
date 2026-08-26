@@ -85,5 +85,23 @@ export function companyGovernancePolicyRoutes(db: Db) {
     }));
   });
 
+  router.post("/companies/:companyId/governance-policy/revisions/:revisionId/restore", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertBoardAdmin(req, companyId);
+    const expectedRevision = typeof req.body?.expectedRevision === "number" ? req.body.expectedRevision : NaN;
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+      throw unprocessable("expectedRevision must be a positive integer", {
+        code: "governance_policy_validation_failed",
+      });
+    }
+    const actor = getActorInfo(req);
+    res.json(await policies.restore({
+      companyId,
+      revisionId: req.params.revisionId as string,
+      expectedRevision,
+      activity: { actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId },
+    }));
+  });
+
   return router;
 }

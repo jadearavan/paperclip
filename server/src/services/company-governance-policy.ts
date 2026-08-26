@@ -55,7 +55,7 @@ export const DEFAULT_COMPANY_GOVERNANCE_POLICY: GovernancePolicyDocument = {
     effect: "include",
     subject: { type: "all_agents" },
     scopes: ["heartbeat"],
-    adapterTypes: ["codex_local"],
+    adapterTypes: ["codex_local", "paperclip_runner"],
     delivery: "required",
   }],
 };
@@ -120,11 +120,11 @@ function policyHash(policy: GovernancePolicyDocument): string {
 }
 
 export function companyGovernancePolicyService(db: Db) {
-  async function active(companyId: string) {
-    const policy = await db.select().from(companyGovernancePolicies)
+  async function active(companyId: string, database: Db = db) {
+    const policy = await database.select().from(companyGovernancePolicies)
       .where(eq(companyGovernancePolicies.companyId, companyId)).then((rows) => rows[0] ?? null);
     if (!policy?.activeRevisionId) return null;
-    return db.select().from(companyGovernancePolicyRevisions)
+    return database.select().from(companyGovernancePolicyRevisions)
       .where(and(
         eq(companyGovernancePolicyRevisions.companyId, companyId),
         eq(companyGovernancePolicyRevisions.id, policy.activeRevisionId),
@@ -202,16 +202,33 @@ export function companyGovernancePolicyService(db: Db) {
     };
   }
 
-  async function replace(input: {
+  type ReplaceInput = {
     companyId: string;
     expectedRevision: number;
     policy: GovernancePolicyDocument;
     activity: Omit<LogActivityInput, "companyId" | "action" | "entityType" | "entityId" | "details">;
-  }) {
-    return db.transaction(async (tx) => {
+  };
+
+  /**
+   * The policy pointer is the CAS lock.  Locking it before reading the active
+   * revision makes two PUTs with the same expected revision serialize: one
+   * creates the immutable revision and the other observes a typed 409 instead
+   * of losing to the unique revision index with a 500.
+   */
+  async function replaceInTransaction(tx: Db, input: ReplaceInput) {
       const policy = governancePolicyDocumentSchema.parse(input.policy);
-      const existing = await tx.select().from(companyGovernancePolicies)
-        .where(eq(companyGovernancePolicies.companyId, input.companyId)).then((rows) => rows[0] ?? null);
+      let existing = await tx.select().from(companyGovernancePolicies)
+        .where(eq(companyGovernancePolicies.companyId, input.companyId)).for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!existing) {
+        await tx.insert(companyGovernancePolicies)
+          .values({ id: randomUUID(), companyId: input.companyId })
+          .onConflictDoNothing({ target: companyGovernancePolicies.companyId });
+        existing = await tx.select().from(companyGovernancePolicies)
+          .where(eq(companyGovernancePolicies.companyId, input.companyId)).for("update")
+          .then((rows) => rows[0] ?? null);
+      }
+      if (!existing) throw new Error("governance_policy_pointer_unavailable");
       const current = existing?.activeRevisionId
         ? await tx.select().from(companyGovernancePolicyRevisions)
           .where(eq(companyGovernancePolicyRevisions.id, existing.activeRevisionId)).then((rows) => rows[0] ?? null)
@@ -222,8 +239,7 @@ export function companyGovernancePolicyService(db: Db) {
           code: "governance_policy_revision_conflict", expectedRevision: input.expectedRevision, currentRevision,
         });
       }
-      const policyId = existing?.id ?? randomUUID();
-      if (!existing) await tx.insert(companyGovernancePolicies).values({ id: policyId, companyId: input.companyId });
+      const policyId = existing.id;
       const [revision] = await tx.insert(companyGovernancePolicyRevisions).values({
         companyId: input.companyId,
         policyId,
@@ -246,14 +262,43 @@ export function companyGovernancePolicyService(db: Db) {
         details: { revision: revision!.revision, sha256: revision!.sha256, bindingCount: policy.bindings.length },
       });
       return revision!;
+  }
+
+  async function replace(input: ReplaceInput) {
+    return db.transaction((tx) => replaceInTransaction(tx as unknown as Db, input));
+  }
+
+  async function restore(input: {
+    companyId: string;
+    revisionId: string;
+    expectedRevision: number;
+    activity: ReplaceInput["activity"];
+  }) {
+    const source = await db.select().from(companyGovernancePolicyRevisions)
+      .where(and(
+        eq(companyGovernancePolicyRevisions.companyId, input.companyId),
+        eq(companyGovernancePolicyRevisions.id, input.revisionId),
+      )).then((rows) => rows[0] ?? null);
+    if (!source) throw notFound("Governance policy revision not found");
+    // Restore is deliberately a replacement, never a pointer rewind: this
+    // writes a new immutable revision and preserves the full audit history.
+    return replace({
+      companyId: input.companyId,
+      expectedRevision: input.expectedRevision,
+      policy: governancePolicyDocumentSchema.parse({
+        schemaVersion: source.schemaVersion,
+        body: source.body,
+        bindings: source.bindings,
+      }),
+      activity: input.activity,
     });
   }
 
-  async function ensureDefault(companyId: string) {
-    const current = await active(companyId);
+  async function ensureDefaultInTransaction(tx: Db, companyId: string) {
+    const current = await active(companyId, tx);
     if (current) return current;
     try {
-      return await replace({
+      return await replaceInTransaction(tx, {
         companyId,
         expectedRevision: 0,
         policy: DEFAULT_COMPANY_GOVERNANCE_POLICY,
@@ -263,12 +308,16 @@ export function companyGovernancePolicyService(db: Db) {
       // A concurrent creator won the revision-0 CAS. Return its immutable
       // revision rather than replacing a board-provided policy.
       if (error && typeof error === "object" && (error as { status?: number }).status === 409) {
-        const concurrent = await active(companyId);
+        const concurrent = await active(companyId, tx);
         if (concurrent) return concurrent;
       }
       throw error;
     }
   }
 
-  return { get, replace, ensureDefault, resolveForHeartbeat };
+  async function ensureDefault(companyId: string) {
+    return db.transaction((tx) => ensureDefaultInTransaction(tx as unknown as Db, companyId));
+  }
+
+  return { get, replace, restore, ensureDefault, ensureDefaultInTransaction, resolveForHeartbeat };
 }

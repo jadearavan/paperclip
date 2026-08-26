@@ -1,4 +1,4 @@
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -29,7 +29,7 @@ type SupervisedChild = {
   signalCode?: NodeJS.Signals | number | null;
   kill: (signal?: NodeJS.Signals | number) => boolean;
   once: (event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void) => unknown;
-  send?: ChildProcess["send"];
+  send?: (message: { type: string }) => unknown;
 };
 
 type WindowsRunSupervisorOptions = {
@@ -41,6 +41,15 @@ type WindowsRunSupervisorOptions = {
   failureThreshold?: number;
   startupGraceMs?: number;
   now?: () => number;
+};
+
+/** The run options that must be preserved when a parent starts its child. */
+export type SupervisedRunOptions = {
+  config?: string;
+  instance?: string;
+  repair?: boolean;
+  bind?: "loopback" | "lan" | "tailnet";
+  force?: boolean;
 };
 
 /**
@@ -137,6 +146,10 @@ export class WindowsRunSupervisor {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    // A listener-loss restart can be paused while it waits for the old child
+    // to exit. Do not release the owning parent until that transaction has
+    // observed `stopping`; otherwise it can launch an orphan after shutdown.
+    if (this.restarting) await this.restarting;
     const child = this.child;
     this.child = null;
     if (child) await this.options.stopChild(child);
@@ -165,6 +178,7 @@ export class WindowsRunSupervisor {
           return;
         }
       }
+      if (this.stopping) return;
       removeRuntimeInfoForPid(oldPid, this.options.instanceId);
       this.start();
     })().finally(() => {
@@ -277,21 +291,34 @@ export async function stopWindowsServerChild(child: SupervisedChild): Promise<vo
   }
 }
 
-function supervisedChildArgs(): string[] {
-  const args = process.argv.slice(1);
-  if (args.includes("--supervised-child")) return args;
-  return [...args, "--supervised-child"];
+/**
+ * Constructs a `run` invocation instead of copying the parent's argv. This
+ * matters when onboarding invokes runCommand() programmatically: its argv is
+ * still `onboard`, which must never be restarted by the watchdog.
+ */
+export function supervisedRunChildArgs(options: SupervisedRunOptions): string[] {
+  const entrypoint = process.argv[1];
+  if (!entrypoint) throw new Error("Paperclip Windows supervisor could not locate the CLI entrypoint.");
+  const args = [entrypoint, "run"];
+  if (options.config) args.push("--config", options.config);
+  if (options.instance) args.push("--instance", options.instance);
+  if (options.bind) args.push("--bind", options.bind);
+  if (options.repair === false) args.push("--no-repair");
+  if (options.force) args.push("--force");
+  args.push("--supervised-child");
+  return args;
 }
 
 /**
  * Runs the Windows-only parent watchdog until the operator terminates it.
- * The child receives the original CLI argv plus a hidden recursion guard.
+ * The child always receives an explicit `run` invocation plus a hidden
+ * recursion guard, including when onboarding called runCommand directly.
  */
-export async function runWithWindowsSupervisor(instanceId: string): Promise<void> {
+export async function runWithWindowsSupervisor(instanceId: string, options: SupervisedRunOptions): Promise<void> {
   const releaseLock = acquireWindowsRunSupervisorLock(instanceId);
   const supervisor = new WindowsRunSupervisor({
     instanceId,
-    startChild: () => spawn(process.execPath, supervisedChildArgs(), {
+    startChild: () => spawn(process.execPath, supervisedRunChildArgs(options), {
       cwd: process.cwd(),
       env: { ...process.env, PAPERCLIP_WINDOWS_RUN_SUPERVISED_CHILD: "1" },
       stdio: ["inherit", "inherit", "inherit", "ipc"],

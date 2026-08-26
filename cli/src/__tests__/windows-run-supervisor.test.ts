@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   acquireWindowsRunSupervisorLock,
+  supervisedRunChildArgs,
   stopWindowsServerChild,
   WindowsRunSupervisor,
   type WindowsRunHealth,
@@ -177,6 +178,59 @@ describe("Windows foreground run supervision", () => {
     releaseProbe();
     await Promise.all([first, second]);
     expect(supervisor.childPid).toBe(101);
+  });
+
+  it("uses an explicit run child invocation when onboarding calls runCommand programmatically", () => {
+    const args = supervisedRunChildArgs({
+      config: "C:/Paperclip/config.json",
+      instance: "team-a",
+      bind: "loopback",
+      repair: false,
+      force: true,
+    });
+
+    expect(args.slice(1)).toEqual([
+      "run",
+      "--config", "C:/Paperclip/config.json",
+      "--instance", "team-a",
+      "--bind", "loopback",
+      "--no-repair",
+      "--force",
+      "--supervised-child",
+    ]);
+  });
+
+  it("waits for an in-flight listener-loss restart before releasing shutdown ownership", async () => {
+    const children = [new FakeChild(101), new FakeChild(202)];
+    let nextChild = 0;
+    let releaseStop!: () => void;
+    const oldChildStop = new Promise<void>((resolve) => { releaseStop = resolve; });
+    const supervisor = new WindowsRunSupervisor({
+      instanceId: "default",
+      failureThreshold: 1,
+      startupGraceMs: 0,
+      startChild: () => children[nextChild++]!,
+      stopChild: async (child) => {
+        if (child.pid === 101) {
+          await oldChildStop;
+          child.kill("SIGTERM");
+          return;
+        }
+        child.kill("SIGTERM");
+      },
+      probeHealth: async () => ({ listenerOk: false, databaseBackupOk: false, databaseBackupStatus: null }),
+      log: () => undefined,
+    });
+
+    supervisor.start();
+    const restart = supervisor.tick();
+    const shutdown = supervisor.stop();
+    releaseStop();
+    await Promise.all([restart, shutdown]);
+
+    expect(nextChild).toBe(1);
+    expect(supervisor.childPid).toBeNull();
+    expect(children[0]!.killed).toBe(true);
   });
 
   it("retries a failed child stop without starting a second server", async () => {

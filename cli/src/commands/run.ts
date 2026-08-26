@@ -47,7 +47,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
     && !opts.supervisedChild
     && process.env.PAPERCLIP_SERVICE_MANAGED !== "1"
   ) {
-    await runWithWindowsSupervisor(instanceId);
+    await runWithWindowsSupervisor(instanceId, opts);
     return;
   }
   await assertForegroundRunAllowed(instanceId, opts.force);

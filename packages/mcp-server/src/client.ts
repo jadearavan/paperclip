@@ -80,6 +80,23 @@ function collectSemanticText(value: unknown, fieldName?: string): string[] {
   return Object.entries(value).flatMap(([key, item]) => collectSemanticText(item, key));
 }
 
+// Interaction and decision endpoints persist their contract payloads verbatim.
+// These fields are identifiers, enum values, or normalized temporal metadata;
+// they are not user-authored text and therefore have no authoritative text
+// readback requirement. Every other string is checked recursively.
+const NON_TEXT_CONTRACT_FIELDS = new Set([
+  "id", "kind", "type", "key", "optionId", "clientKey", "revisionId",
+  "idempotencyKey", "sourceCommentId", "sourceRunId", "addresseeAgentId",
+  "continuationPolicy", "resolverPolicy", "expiresAt",
+]);
+
+function collectContractText(value: unknown, fieldName?: string): string[] {
+  if (typeof value === "string") return fieldName && NON_TEXT_CONTRACT_FIELDS.has(fieldName) ? [] : [value];
+  if (Array.isArray(value)) return value.flatMap((item) => collectContractText(item, fieldName));
+  if (!isRecord(value)) return [];
+  return Object.entries(value).flatMap(([key, item]) => collectContractText(item, key));
+}
+
 function collectAllStrings(value: unknown): string[] {
   if (typeof value === "string") return [value];
   if (Array.isArray(value)) return value.flatMap(collectAllStrings);
@@ -104,8 +121,10 @@ function verifyTextMutationReadback(path: string, method: string, requestBody: u
   const isDecision = /^\/(?:companies\/[^/]+\/(?:decisions|decision-bundles)|decisions\/[^/]+\/(?:decide|dismiss|cancel))$/.test(pathname);
   const requiresReadback = isIssueUpdate || isCommentCreate || isIssueCreate || isChildCreate || isRecoveryResolve || isInteraction || isDecision;
   const requested = isRecord(requestBody) ? requestBody : null;
-  const semanticText = requested ? collectSemanticText(requested) : [];
-  if (!requiresReadback || semanticText.length === 0) return;
+  const expectedText = requested
+    ? isInteraction || isDecision ? collectContractText(requested) : collectSemanticText(requested)
+    : [];
+  if (!requiresReadback || expectedText.length === 0) return;
   if (!isRecord(response)) throw new PaperclipApiReadbackMismatchError(path, "authoritative response unavailable");
 
   if (isCommentCreate) assertExactText(path, "body", requested?.body, response.body);
@@ -122,7 +141,7 @@ function verifyTextMutationReadback(path: string, method: string, requestBody: u
   }
   if (isInteraction || isDecision) {
     const returnedText = collectAllStrings(response);
-    for (const text of semanticText) {
+    for (const text of expectedText) {
       if (!returnedText.includes(text)) throw new PaperclipApiReadbackMismatchError(path, "interaction or decision text");
     }
   }

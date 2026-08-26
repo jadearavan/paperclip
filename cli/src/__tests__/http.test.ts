@@ -74,6 +74,44 @@ describe("PaperclipApiClient", () => {
       .rejects.toBeInstanceOf(ApiReadbackMismatchError);
   });
 
+  it("checks all persisted interaction and decision contract text recursively", async () => {
+    const detailsMarkdown = "\u0414\u0435\u0442\u0430\u043b\u0438 \u0432 payload";
+    const acceptLabel = "\u041f\u0440\u0438\u043d\u044f\u0442\u044c";
+    const rejectLabel = "\u041e\u0442\u043a\u043b\u043e\u043d\u0438\u0442\u044c";
+    const customField = "\u041f\u0440\u043e\u0438\u0437\u0432\u043e\u043b\u044c\u043d\u043e\u0435 \u043f\u043e\u043b\u0435";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        kind: "request_confirmation",
+        payload: { detailsMarkdown, acceptLabel, rejectLabel },
+      }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ decision: { inputValues: { customField } } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+
+    await expect(client.post("/api/issues/parent/interactions", {
+      kind: "request_confirmation",
+      idempotencyKey: "run:confirmation",
+      payload: { version: 1, detailsMarkdown, acceptLabel, rejectLabel },
+    })).resolves.toBeTruthy();
+    await expect(client.post("/api/decisions/decision-1/decide", {
+      optionId: "approve",
+      idempotencyKey: "run:decision",
+      inputValues: { customField },
+    })).resolves.toBeTruthy();
+  });
+
+  it("stops when an arbitrary decision input is absent from authoritative readback", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ decision: { inputValues: {} } }), { status: 200 }),
+    ));
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+
+    await expect(client.post("/api/decisions/decision-1/decide", {
+      optionId: "approve",
+      inputValues: { customField: "\u041a\u0438\u0440\u0438\u043b\u043b\u0438\u0446\u0430" },
+    })).rejects.toBeInstanceOf(ApiReadbackMismatchError);
+  });
+
   it("returns null on ignoreNotFound", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ error: "Not found" }), { status: 404 }),

@@ -217,10 +217,10 @@ function verifyTextMutationReadback(path: string, method: string | undefined, ra
   const isRecoveryResolve = method?.toUpperCase() === "POST" && /^\/api\/issues\/[^/]+\/recovery-actions\/resolve$/.test(pathname);
   const isInteraction = /^\/api\/issues\/[^/]+\/interactions(?:\/[^/]+(?:\/(?:accept|reject|respond|verdicts|withdraw|cancel))?)?$/.test(pathname);
   const isDecision = /^\/api\/(?:companies\/[^/]+\/(?:decisions|decision-bundles)|decisions\/[^/]+\/(?:decide|dismiss|cancel))$/.test(pathname);
-  const semanticText = collectSemanticText(requested);
+  const expectedText = isInteraction || isDecision ? collectContractText(requested) : collectSemanticText(requested);
   const requiresReadback = isIssueUpdate || isCommentCreate || isIssueCreate || isChildCreate || isRecoveryResolve || isInteraction || isDecision;
   if (!response || typeof response !== "object") {
-    if (requiresReadback && semanticText.length > 0) throw new ApiReadbackMismatchError(path, "authoritative response unavailable");
+    if (requiresReadback && expectedText.length > 0) throw new ApiReadbackMismatchError(path, "authoritative response unavailable");
     return;
   }
   const returned = response as Record<string, unknown>;
@@ -241,7 +241,7 @@ function verifyTextMutationReadback(path: string, method: string | undefined, ra
   }
   if (isInteraction || isDecision) {
     const returnedText = collectAllStrings(returned);
-    for (const text of semanticText) {
+    for (const text of expectedText) {
       if (!returnedText.includes(text)) throw new ApiReadbackMismatchError(path, "interaction or decision text");
     }
   }
@@ -263,6 +263,23 @@ function collectSemanticText(value: unknown, fieldName?: string): string[] {
   if (Array.isArray(value)) return value.flatMap((item) => collectSemanticText(item, fieldName));
   if (!isRecord(value)) return [];
   return Object.entries(value).flatMap(([key, item]) => collectSemanticText(item, key));
+}
+
+// Interaction and decision endpoints persist their contract payloads verbatim.
+// These fields are identifiers, enum values, or normalized temporal metadata;
+// they are not user-authored text and therefore have no authoritative text
+// readback requirement. Every other string is checked recursively.
+const NON_TEXT_CONTRACT_FIELDS = new Set([
+  "id", "kind", "type", "key", "optionId", "clientKey", "revisionId",
+  "idempotencyKey", "sourceCommentId", "sourceRunId", "addresseeAgentId",
+  "continuationPolicy", "resolverPolicy", "expiresAt",
+]);
+
+function collectContractText(value: unknown, fieldName?: string): string[] {
+  if (typeof value === "string") return fieldName && NON_TEXT_CONTRACT_FIELDS.has(fieldName) ? [] : [value];
+  if (Array.isArray(value)) return value.flatMap((item) => collectContractText(item, fieldName));
+  if (!isRecord(value)) return [];
+  return Object.entries(value).flatMap(([key, item]) => collectContractText(item, key));
 }
 
 function collectAllStrings(value: unknown): string[] {

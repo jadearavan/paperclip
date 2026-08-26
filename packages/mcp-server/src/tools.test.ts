@@ -80,6 +80,39 @@ describe("paperclip MCP tools", () => {
       .rejects.toBeInstanceOf(PaperclipApiReadbackMismatchError);
   });
 
+  it("checks recursive interaction and decision contract text, including arbitrary inputValues", async () => {
+    const detailsMarkdown = "\u0414\u0435\u0442\u0430\u043b\u0438 \u0432 payload";
+    const acceptLabel = "\u041f\u0440\u0438\u043d\u044f\u0442\u044c";
+    const rejectLabel = "\u041e\u0442\u043a\u043b\u043e\u043d\u0438\u0442\u044c";
+    const customField = "\u041f\u0440\u043e\u0438\u0437\u0432\u043e\u043b\u044c\u043d\u043e\u0435 \u043f\u043e\u043b\u0435";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockJsonResponse({
+        kind: "request_confirmation",
+        payload: { detailsMarkdown, acceptLabel, rejectLabel },
+      }, 201))
+      .mockResolvedValueOnce(mockJsonResponse({ decision: { inputValues: { customField } } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(makeClient().requestJson("POST", "/issues/PAP-1135/interactions", {
+      body: {
+        kind: "request_confirmation",
+        idempotencyKey: "run:confirmation",
+        payload: { version: 1, detailsMarkdown, acceptLabel, rejectLabel },
+      },
+    })).resolves.toBeTruthy();
+    await expect(makeClient().requestJson("POST", "/decisions/decision-1/decide", {
+      body: { optionId: "approve", idempotencyKey: "run:decision", inputValues: { customField } },
+    })).resolves.toBeTruthy();
+  });
+
+  it("stops MCP workflow when an arbitrary decision input has no exact readback", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockJsonResponse({ decision: { inputValues: {} } })));
+
+    await expect(makeClient().requestJson("POST", "/decisions/decision-1/decide", {
+      body: { optionId: "approve", inputValues: { customField: "\u041a\u0438\u0440\u0438\u043b\u043b\u0438\u0446\u0430" } },
+    })).rejects.toBeInstanceOf(PaperclipApiReadbackMismatchError);
+  });
+
   it("lists the company skill library with the default company id", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse([{ key: "paperclipai/bundled/product/wireframe", name: "wireframe" }]),

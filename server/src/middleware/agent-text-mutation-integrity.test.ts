@@ -88,7 +88,7 @@ describe("agentTextMutationContentType", () => {
     expect(persisted).toBe(0);
   });
 
-  it("rejects a nested literal U+FFFD before persistence while preserving valid multilingual UTF-8", async () => {
+  it("rejects nested U+FFFD and loss markers before persistence while preserving valid multilingual UTF-8", async () => {
     const app = express();
     const persisted: unknown[] = [];
     app.use((req, _res, next) => {
@@ -104,11 +104,14 @@ describe("agentTextMutationContentType", () => {
     });
 
     const corrupted = Buffer.from(JSON.stringify({ comment: { body: "bad \uFFFD text" } }), "utf8");
+    const lossy = Buffer.from(JSON.stringify({ comment: { body: "????????" } }), "utf8");
     const valid = Buffer.from(JSON.stringify({ comment: { body: "Привет, 中文, 日本語" } }), "utf8");
     const corruptedResponse = await sendRaw(app, "PATCH", "/api/issues/1", corrupted, createHash("sha256").update(corrupted).digest("base64"));
+    const lossyResponse = await sendRaw(app, "PATCH", "/api/issues/1", lossy, createHash("sha256").update(lossy).digest("base64"));
     const validResponse = await sendRaw(app, "PATCH", "/api/issues/1", valid, createHash("sha256").update(valid).digest("base64"));
 
     expect(corruptedResponse.status).toBe(422);
+    expect(lossyResponse.status).toBe(422);
     expect(validResponse.status).toBe(200);
     expect(validResponse.body).toEqual({ comment: { body: "Привет, 中文, 日本語" } });
     expect(persisted).toEqual([{ comment: { body: "Привет, 中文, 日本語" } }]);

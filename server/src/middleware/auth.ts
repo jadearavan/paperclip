@@ -555,24 +555,27 @@ export async function resolveCloudTenantActor(
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  if (shouldSync) await db
-    .insert(companies)
-    .values({
-      id: companyId,
-      name: companyName,
-      description: `Provisioned by Paperclip Cloud for stack ${stackId}.`,
-      status: "active",
-      issuePrefix: issuePrefixForCloudStack(stackId),
-      updatedAt: now,
-    })
-    .onConflictDoNothing({
-      target: companies.id,
-    });
+  if (shouldSync) await db.transaction(async (tx) => {
+    await tx
+      .insert(companies)
+      .values({
+        id: companyId,
+        name: companyName,
+        description: `Provisioned by Paperclip Cloud for stack ${stackId}.`,
+        status: "active",
+        issuePrefix: issuePrefixForCloudStack(stackId),
+        updatedAt: now,
+      })
+      .onConflictDoNothing({
+        target: companies.id,
+      });
 
-  // Cloud tenant provisioning bypasses companyService.create. Seed the same
-  // immutable revision here so no newly materialized tenant can run agents
-  // without the company overlay.
-  if (shouldSync) await companyGovernancePolicyService(db).ensureDefault(companyId);
+    // Cloud tenant provisioning bypasses companyService.create. The company
+    // row and its first policy become visible together, so a failed seed
+    // cannot leave a heartbeat-capable company without required policy.
+    await companyGovernancePolicyService(tx as unknown as Db)
+      .ensureDefaultInTransaction(tx as unknown as Db, companyId);
+  });
 
   if (shouldSync && paperclipCompanyName) {
     await repairCloudTenantCompanyName(db, {

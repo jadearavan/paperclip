@@ -93,7 +93,7 @@ export function resolveGovernancePolicyBinding(
     .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id))
     .find((binding) => {
       if (!binding.scopes.includes("heartbeat")) return false;
-      if (binding.adapterTypes && (!target.adapterType || !binding.adapterTypes.includes(target.adapterType))) return false;
+      if (binding.adapterTypes && (!target.adapterType || !(binding.adapterTypes as string[]).includes(target.adapterType))) return false;
       if (binding.subject.type === "all_agents") return true;
       if (binding.subject.type === "agents") return binding.subject.agentIds.includes(target.agentId);
       return roleMatches(target.role, binding.subject.roles);
@@ -149,7 +149,11 @@ export function companyGovernancePolicyService(db: Db) {
       adapterType: agents.adapterType,
     }).from(agents).where(eq(agents.companyId, companyId));
     const targets = companyAgents.map((agent) => {
-      const binding = resolveGovernancePolicyBinding(document.bindings, agent);
+      const binding = resolveGovernancePolicyBinding(document.bindings, {
+        agentId: agent.id,
+        role: agent.role,
+        adapterType: agent.adapterType,
+      });
       const included = Boolean(binding && binding.effect === "include");
       return {
         agentId: agent.id,

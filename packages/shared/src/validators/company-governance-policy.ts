@@ -7,7 +7,10 @@ const nonEmptyUniqueStrings = z.array(z.string().trim().min(1).max(256)).min(1).
 // Do not accept a binding that looks applicable but would silently omit the
 // overlay for another adapter. Additional adapters must add an explicit,
 // tested protected delivery implementation before joining this allowlist.
-const protectedGovernanceAdapterTypes = z.array(z.literal("codex_local")).min(1).max(1);
+const protectedGovernanceAdapterTypes = z.array(z.enum(["codex_local", "paperclip_runner"]))
+  .min(1)
+  .max(2)
+  .refine((values) => new Set(values).size === values.length, "Adapter types must be unique");
 
 export const governancePolicyBindingSchema = z.object({
   id: z.string().trim().min(1).max(128).regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/),
@@ -34,6 +37,11 @@ export const replaceGovernancePolicySchema = governancePolicyDocumentSchema.exte
   expectedRevision: z.number().int().nonnegative(),
 }).strict();
 
+export const restoreGovernancePolicyRevisionSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+}).strict();
+
 export type GovernancePolicyBinding = z.infer<typeof governancePolicyBindingSchema>;
 export type GovernancePolicyDocument = z.infer<typeof governancePolicyDocumentSchema>;
 export type ReplaceGovernancePolicy = z.infer<typeof replaceGovernancePolicySchema>;
+export type RestoreGovernancePolicyRevision = z.infer<typeof restoreGovernancePolicyRevisionSchema>;

@@ -473,7 +473,7 @@ export function CompanySettings() {
                       type="button"
                       variant="outline"
                       size="sm"
-                      disabled={revision.id === governancePolicyQuery.data.active.id || restoreGovernancePolicyMutation.isPending}
+                      disabled={revision.id === governancePolicyQuery.data?.active?.id || restoreGovernancePolicyMutation.isPending}
                       onClick={() => restoreGovernancePolicyMutation.mutate(revision.id)}
                     >
                       Restore as new revision

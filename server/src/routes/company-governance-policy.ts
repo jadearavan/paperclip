@@ -1,6 +1,6 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { replaceGovernancePolicySchema } from "@paperclipai/shared";
+import { replaceGovernancePolicySchema, restoreGovernancePolicyRevisionSchema } from "@paperclipai/shared";
 import { ZodError } from "zod";
 import { forbidden, HttpError, unprocessable } from "../errors.js";
 import { accessService } from "../services/access.js";
@@ -88,17 +88,17 @@ export function companyGovernancePolicyRoutes(db: Db) {
   router.post("/companies/:companyId/governance-policy/revisions/:revisionId/restore", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertBoardAdmin(req, companyId);
-    const expectedRevision = typeof req.body?.expectedRevision === "number" ? req.body.expectedRevision : NaN;
-    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+    const parsed = restoreGovernancePolicyRevisionSchema.safeParse(req.body);
+    if (!parsed.success) {
       throw unprocessable("expectedRevision must be a positive integer", {
-        code: "governance_policy_validation_failed",
+        code: "governance_policy_validation_failed", issues: parsed.error.issues,
       });
     }
     const actor = getActorInfo(req);
     res.json(await policies.restore({
       companyId,
       revisionId: req.params.revisionId as string,
-      expectedRevision,
+      expectedRevision: parsed.data.expectedRevision,
       activity: { actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId },
     }));
   });

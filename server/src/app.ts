@@ -7,7 +7,13 @@ import type { Db } from "@paperclipai/db";
 import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
-import { agentTextMutationContentType, agentTextMutationIntegrity, httpLogger, errorHandler } from "./middleware/index.js";
+import {
+  agentTextMutationContentType,
+  agentTextMutationIntegrity,
+  captureAndValidateAgentTextMutationBody,
+  httpLogger,
+  errorHandler,
+} from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -322,7 +328,7 @@ export async function createApp(
   const app = express();
   app.locals.paperclipDb = db;
   const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
-    (req as unknown as { rawBody: Buffer }).rawBody = buf;
+    captureAndValidateAgentTextMutationBody(req, buf);
   };
 
   // Respect the operator's `TRUST_PROXY` env var (see middleware/trust-proxy.ts).

@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { RequestHandler } from "express";
+import type { Request, RequestHandler } from "express";
+import { badRequest } from "../errors.js";
 
 const JSON_CONTENT_TYPE = /^application\/json(?:\s*;|\s*$)/i;
 const CHARSET_PARAMETER = /(?:^|;)\s*charset\s*=\s*([^;\s]+)/i;
@@ -22,13 +23,30 @@ export const agentTextMutationContentType: RequestHandler = (req, res, next) => 
 };
 
 /**
+ * `express.json()` calls this while it still has the exact wire bytes and
+ * before it decodes them.  Node's default UTF-8 decoding replaces malformed
+ * input with U+FFFD, which makes a matching digest insufficient evidence that
+ * text was safe to persist.
+ */
+export function captureAndValidateAgentTextMutationBody(req: Request, rawBody: Buffer): void {
+  (req as Request & { rawBody?: Buffer }).rawBody = rawBody;
+  if (!isAgentJsonMutation(req)) return;
+
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(rawBody);
+  } catch {
+    throw badRequest("Agent JSON mutations must contain valid UTF-8 bytes.");
+  }
+}
+
+/**
  * Runs after JSON parsing, once the raw body is available for the digest and
  * semantic corruption checks. The content-type gate must run before parsing
  * so body-parser cannot turn a non-UTF-8 request into an unrelated 415.
  */
 export const agentTextMutationIntegrity: RequestHandler = (req, res, next) => {
   const contentType = req.header("content-type");
-  if (req.actor?.type !== "agent" || !["POST", "PATCH"].includes(req.method) || !contentType || !JSON_CONTENT_TYPE.test(contentType)) {
+  if (!isAgentJsonMutation(req)) {
     return next();
   }
 
@@ -37,16 +55,24 @@ export const agentTextMutationIntegrity: RequestHandler = (req, res, next) => {
   if (!expectedDigest || !rawBody || !safeEqual(expectedDigest, digest(rawBody))) {
     return res.status(400).json({ error: "Content-Digest must match the exact UTF-8 JSON request bytes." });
   }
-  if (containsCorruptionMarker(req.body)) {
-    return res.status(422).json({ error: "JSON mutation contains the demonstrated text-encoding corruption marker (four or more consecutive question marks)." });
+  if (containsUnicodeReplacementCharacter(req.body)) {
+    return res.status(422).json({ error: "JSON mutation contains the Unicode replacement character (U+FFFD)." });
   }
   return next();
 };
 
-function containsCorruptionMarker(value: unknown): boolean {
-  if (typeof value === "string") return /\?{4,}/.test(value);
-  if (Array.isArray(value)) return value.some(containsCorruptionMarker);
-  if (value && typeof value === "object") return Object.values(value).some(containsCorruptionMarker);
+function isAgentJsonMutation(req: Request): boolean {
+  const contentType = req.header("content-type");
+  return req.actor?.type === "agent"
+    && ["POST", "PATCH"].includes(req.method)
+    && Boolean(contentType)
+    && JSON_CONTENT_TYPE.test(contentType);
+}
+
+function containsUnicodeReplacementCharacter(value: unknown): boolean {
+  if (typeof value === "string") return value.includes("\uFFFD");
+  if (Array.isArray(value)) return value.some(containsUnicodeReplacementCharacter);
+  if (value && typeof value === "object") return Object.values(value).some(containsUnicodeReplacementCharacter);
   return false;
 }
 

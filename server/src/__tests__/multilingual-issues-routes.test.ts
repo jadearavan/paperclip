@@ -8,7 +8,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
-import { agentTextMutationIntegrity } from "../middleware/agent-text-mutation-integrity.js";
+import { agentTextMutationContentType, agentTextMutationIntegrity } from "../middleware/agent-text-mutation-integrity.js";
 import { issueRoutes } from "../routes/issues.js";
 import type { StorageService } from "../storage/types.js";
 
@@ -95,7 +95,6 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
 
   function createApp(companyId: string) {
     const app = express();
-    app.use(express.json({ verify: (req, _res, buffer) => { (req as typeof req & { rawBody: Buffer }).rawBody = buffer; } }));
     app.use((req, _res, next) => {
       (req as any).actor = {
         type: actorType,
@@ -109,6 +108,10 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
       };
       next();
     });
+    // Keep this fixture in the production order: charset validation must run
+    // before express.json() gets a chance to emit its own 415 response.
+    app.use(agentTextMutationContentType);
+    app.use(express.json({ verify: (req, _res, buffer) => { (req as typeof req & { rawBody: Buffer }).rawBody = buffer; } }));
     app.use(agentTextMutationIntegrity);
     // The route fixture is board-authorized; retain the agent identity only for
     // the integrity boundary, then exercise the normal persistence route.

@@ -66,8 +66,8 @@ describe("PaperclipApiClient", () => {
     await expect(client.post("/api/issues/parent/interactions", { payload: { prompt: "Нужно решение" } })).resolves.toBeTruthy();
   });
 
-  it("rejects an empty response for a recognized text mutation", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+  it.each([200, 201, 204])("rejects an empty %i response for a recognized text mutation", async (status) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status })));
     const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
 
     await expect(client.post("/api/issues/parent/interactions", { payload: { prompt: "Нужно решение" } }))

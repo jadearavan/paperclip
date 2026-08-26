@@ -9,7 +9,7 @@ const CONTENT_DIGEST = /^sha-256=:([A-Za-z0-9+/]+={0,2}):$/;
  * Agent-authenticated JSON POST/PATCH mutations must prove their exact raw
  * bytes. Board/browser and non-JSON mutations retain their existing contract.
  */
-export const agentTextMutationIntegrity: RequestHandler = (req, res, next) => {
+export const agentTextMutationContentType: RequestHandler = (req, res, next) => {
   const contentType = req.header("content-type");
   if (req.actor?.type !== "agent" || !["POST", "PATCH"].includes(req.method) || !contentType || !JSON_CONTENT_TYPE.test(contentType)) {
     return next();
@@ -17,6 +17,19 @@ export const agentTextMutationIntegrity: RequestHandler = (req, res, next) => {
   const charset = contentType?.match(CHARSET_PARAMETER)?.[1]?.replace(/^['"]|['"]$/g, "").toLowerCase();
   if (charset !== "utf-8" && charset !== "utf8") {
     return res.status(428).json({ error: "Agent JSON mutations require Content-Type: application/json; charset=utf-8." });
+  }
+  return next();
+};
+
+/**
+ * Runs after JSON parsing, once the raw body is available for the digest and
+ * semantic corruption checks. The content-type gate must run before parsing
+ * so body-parser cannot turn a non-UTF-8 request into an unrelated 415.
+ */
+export const agentTextMutationIntegrity: RequestHandler = (req, res, next) => {
+  const contentType = req.header("content-type");
+  if (req.actor?.type !== "agent" || !["POST", "PATCH"].includes(req.method) || !contentType || !JSON_CONTENT_TYPE.test(contentType)) {
+    return next();
   }
 
   const expectedDigest = parseContentDigest(req.header("content-digest"));

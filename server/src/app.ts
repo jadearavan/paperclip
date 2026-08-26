@@ -7,7 +7,7 @@ import type { Db } from "@paperclipai/db";
 import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
-import { agentTextMutationIntegrity, httpLogger, errorHandler } from "./middleware/index.js";
+import { agentTextMutationContentType, agentTextMutationIntegrity, httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -330,14 +330,6 @@ export async function createApp(
   // when the server may be reachable without a known reverse proxy in front.
   applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
 
-  app.use(COMPANY_IMPORT_API_PATH, express.json({
-    limit: PORTABLE_JSON_BODY_LIMIT,
-    verify: captureRawBody,
-  }));
-  app.use(express.json({
-    limit: DEFAULT_JSON_BODY_LIMIT,
-    verify: captureRawBody,
-  }));
   app.use("/api", apiCompression());
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
@@ -361,6 +353,18 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  // This must happen before express.json(): body-parser rejects unsupported
+  // charsets itself, which would otherwise bypass the agent integrity
+  // contract and return 415 rather than the deterministic 428.
+  app.use(agentTextMutationContentType);
+  app.use(COMPANY_IMPORT_API_PATH, express.json({
+    limit: PORTABLE_JSON_BODY_LIMIT,
+    verify: captureRawBody,
+  }));
+  app.use(express.json({
+    limit: DEFAULT_JSON_BODY_LIMIT,
+    verify: captureRawBody,
+  }));
   app.use(agentTextMutationIntegrity);
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {

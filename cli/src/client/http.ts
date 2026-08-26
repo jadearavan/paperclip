@@ -174,6 +174,7 @@ export class PaperclipApiClient {
 
     const text = await response.text();
     if (!text.trim()) {
+      verifyTextMutationReadback(path, init.method, init.body, undefined);
       return null;
     }
 

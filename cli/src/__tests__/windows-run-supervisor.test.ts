@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   acquireWindowsRunSupervisorLock,
+  createIdempotentShutdown,
   supervisedRunChildArgs,
   stopWindowsServerChild,
   WindowsRunSupervisor,
@@ -231,6 +232,25 @@ describe("Windows foreground run supervision", () => {
     expect(nextChild).toBe(1);
     expect(supervisor.childPid).toBeNull();
     expect(children[0]!.killed).toBe(true);
+  });
+
+  it("coalesces repeated termination signals into one shutdown transaction", async () => {
+    let calls = 0;
+    let releaseShutdown!: () => void;
+    const pendingShutdown = new Promise<void>((resolve) => { releaseShutdown = resolve; });
+    const shutdown = createIdempotentShutdown(async () => {
+      calls += 1;
+      await pendingShutdown;
+    });
+
+    const firstSignal = shutdown();
+    const repeatedSignal = shutdown();
+    expect(repeatedSignal).toBe(firstSignal);
+    expect(calls).toBe(1);
+
+    releaseShutdown();
+    await Promise.all([firstSignal, repeatedSignal]);
+    expect(calls).toBe(1);
   });
 
   it("retries a failed child stop without starting a second server", async () => {

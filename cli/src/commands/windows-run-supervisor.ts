@@ -309,6 +309,15 @@ export function supervisedRunChildArgs(options: SupervisedRunOptions): string[] 
   return args;
 }
 
+/** Coalesce repeated operator signals into one ownership-preserving shutdown. */
+export function createIdempotentShutdown(action: () => Promise<void>): () => Promise<void> {
+  let shutdownPromise: Promise<void> | null = null;
+  return () => {
+    if (!shutdownPromise) shutdownPromise = action();
+    return shutdownPromise;
+  };
+}
+
 /**
  * Runs the Windows-only parent watchdog until the operator terminates it.
  * The child always receives an explicit `run` invocation plus a hidden
@@ -329,18 +338,21 @@ export async function runWithWindowsSupervisor(instanceId: string, options: Supe
   });
 
   let interval: NodeJS.Timeout | null = null;
-  const shutdown = async () => {
+  const shutdown = createIdempotentShutdown(async () => {
     if (interval) clearInterval(interval);
     try {
       await supervisor.stop();
     } finally {
       releaseLock();
     }
-  };
+  });
   const onSignal = () => { void shutdown().finally(() => process.exit(0)); };
 
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  // Keep both handlers installed until the one idempotent shutdown transaction
+  // completes. A repeated signal must not restore Node's default termination
+  // behavior while the supervised child may still own the instance port.
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
   try {
     supervisor.start();
     interval = setInterval(() => { void supervisor.tick(); }, 2_000);

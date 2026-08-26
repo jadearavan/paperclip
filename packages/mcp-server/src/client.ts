@@ -90,18 +90,41 @@ const NON_TEXT_CONTRACT_FIELDS = new Set([
   "continuationPolicy", "resolverPolicy", "expiresAt",
 ]);
 
-function collectContractText(value: unknown, fieldName?: string): string[] {
-  if (typeof value === "string") return fieldName && NON_TEXT_CONTRACT_FIELDS.has(fieldName) ? [] : [value];
-  if (Array.isArray(value)) return value.flatMap((item) => collectContractText(item, fieldName));
-  if (!isRecord(value)) return [];
-  return Object.entries(value).flatMap(([key, item]) => collectContractText(item, key));
+interface TextPath {
+  path: readonly (string | number)[];
+  value: string;
 }
 
-function collectAllStrings(value: unknown): string[] {
-  if (typeof value === "string") return [value];
-  if (Array.isArray(value)) return value.flatMap(collectAllStrings);
+function collectContractText(value: unknown, fieldName?: string, path: readonly (string | number)[] = []): TextPath[] {
+  if (typeof value === "string") return fieldName && NON_TEXT_CONTRACT_FIELDS.has(fieldName) ? [] : [{ path, value }];
+  if (Array.isArray(value)) return value.flatMap((item, index) => collectContractText(item, fieldName, [...path, index]));
   if (!isRecord(value)) return [];
-  return Object.values(value).flatMap(collectAllStrings);
+  return Object.entries(value).flatMap(([key, item]) => collectContractText(item, key, [...path, key]));
+}
+
+function assertTextPaths(path: string, expectedText: readonly TextPath[], response: unknown) {
+  for (const expected of expectedText) {
+    const actual = readTextPath(response, expected.path);
+    if (actual !== expected.value) throw new PaperclipApiReadbackMismatchError(path, formatTextPath(expected.path));
+  }
+}
+
+function readTextPath(value: unknown, path: readonly (string | number)[]): unknown {
+  let current = value;
+  for (const segment of path) {
+    if (typeof segment === "number") {
+      if (!Array.isArray(current)) return undefined;
+      current = current[segment];
+    } else {
+      if (!isRecord(current)) return undefined;
+      current = current[segment];
+    }
+  }
+  return current;
+}
+
+function formatTextPath(path: readonly (string | number)[]): string {
+  return path.map((segment) => typeof segment === "number" ? `[${segment}]` : segment).join(".").replace(".[", "[");
 }
 
 function assertExactText(path: string, field: string, expected: unknown, actual: unknown) {
@@ -121,10 +144,9 @@ function verifyTextMutationReadback(path: string, method: string, requestBody: u
   const isDecision = /^\/(?:companies\/[^/]+\/(?:decisions|decision-bundles)|decisions\/[^/]+\/(?:decide|dismiss|cancel))$/.test(pathname);
   const requiresReadback = isIssueUpdate || isCommentCreate || isIssueCreate || isChildCreate || isRecoveryResolve || isInteraction || isDecision;
   const requested = isRecord(requestBody) ? requestBody : null;
-  const expectedText = requested
-    ? isInteraction || isDecision ? collectContractText(requested) : collectSemanticText(requested)
-    : [];
-  if (!requiresReadback || expectedText.length === 0) return;
+  const expectedText = requested ? collectSemanticText(requested) : [];
+  const expectedContractText = requested && (isInteraction || isDecision) ? collectContractText(requested) : [];
+  if (!requiresReadback || (expectedText.length === 0 && expectedContractText.length === 0)) return;
   if (!isRecord(response)) throw new PaperclipApiReadbackMismatchError(path, "authoritative response unavailable");
 
   if (isCommentCreate) assertExactText(path, "body", requested?.body, response.body);
@@ -140,10 +162,12 @@ function verifyTextMutationReadback(path: string, method: string, requestBody: u
     assertExactText(path, "description", requested?.description, child.description);
   }
   if (isInteraction || isDecision) {
-    const returnedText = collectAllStrings(response);
-    for (const text of expectedText) {
-      if (!returnedText.includes(text)) throw new PaperclipApiReadbackMismatchError(path, "interaction or decision text");
-    }
+    const authoritative = isInteraction && isRecord(response.interaction)
+      ? response.interaction
+      : isDecision && isRecord(response.decision)
+        ? response.decision
+        : response;
+    assertTextPaths(path, expectedContractText, authoritative);
   }
 }
 

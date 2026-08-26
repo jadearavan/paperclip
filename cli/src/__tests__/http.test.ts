@@ -58,12 +58,12 @@ describe("PaperclipApiClient", () => {
   it("checks child and nested interaction text against their authoritative responses", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ issue: { title: "Дочерняя задача", description: "Описание" } }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ interaction: { payload: { prompt: "Нужно решение" }, result: { summaryMarkdown: "Нужно решение" } } }), { status: 201 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ interaction: { payload: { prompt: "Нужно решение", steps: [{ message: "Первый шаг" }] }, result: { summaryMarkdown: "Нужно решение" } } }), { status: 201 }));
     vi.stubGlobal("fetch", fetchMock);
     const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
 
     await expect(client.post("/api/issues/parent/children", { title: "Дочерняя задача", description: "Описание" })).resolves.toBeTruthy();
-    await expect(client.post("/api/issues/parent/interactions", { payload: { prompt: "Нужно решение" } })).resolves.toBeTruthy();
+    await expect(client.post("/api/issues/parent/interactions", { payload: { prompt: "Нужно решение", steps: [{ message: "Первый шаг" }] } })).resolves.toBeTruthy();
   });
 
   it.each([200, 201, 204])("rejects an empty %i response for a recognized text mutation", async (status) => {
@@ -109,6 +109,21 @@ describe("PaperclipApiClient", () => {
     await expect(client.post("/api/decisions/decision-1/decide", {
       optionId: "approve",
       inputValues: { customField: "\u041a\u0438\u0440\u0438\u043b\u043b\u0438\u0446\u0430" },
+    })).rejects.toBeInstanceOf(ApiReadbackMismatchError);
+  });
+
+  it("rejects a structurally swapped interaction text readback", async () => {
+    const title = "Заголовок";
+    const prompt = "Подтвердите действие";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      interaction: { title: prompt, payload: { prompt: title, steps: ["один", "два"] } },
+    }), { status: 201 })));
+    const client = new PaperclipApiClient({ apiBase: "http://localhost:3100" });
+
+    await expect(client.post("/api/issues/parent/interactions", {
+      kind: "request_confirmation",
+      title,
+      payload: { prompt, steps: ["один", "два"] },
     })).rejects.toBeInstanceOf(ApiReadbackMismatchError);
   });
 

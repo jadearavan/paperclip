@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -8,7 +9,11 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
-import { agentTextMutationContentType, agentTextMutationIntegrity } from "../middleware/agent-text-mutation-integrity.js";
+import {
+  agentTextMutationContentType,
+  agentTextMutationIntegrity,
+  captureAndValidateAgentTextMutationBody,
+} from "../middleware/agent-text-mutation-integrity.js";
 import { issueRoutes } from "../routes/issues.js";
 import type { StorageService } from "../storage/types.js";
 
@@ -73,7 +78,7 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
       membershipRole: "owner",
       updatedAt: new Date(),
     });
-  }, 20_000);
+  }, 120_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -111,7 +116,10 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
     // Keep this fixture in the production order: charset validation must run
     // before express.json() gets a chance to emit its own 415 response.
     app.use(agentTextMutationContentType);
-    app.use(express.json({ verify: (req, _res, buffer) => { (req as typeof req & { rawBody: Buffer }).rawBody = buffer; } }));
+    const verifyAgentJsonBody = (req: IncomingMessage, _res: ServerResponse, buffer: Buffer) => {
+      captureAndValidateAgentTextMutationBody(req, buffer);
+    };
+    app.use(express.json({ verify: verifyAgentJsonBody }));
     app.use(agentTextMutationIntegrity);
     // The route fixture is board-authorized; retain the agent identity only for
     // the integrity boundary, then exercise the normal persistence route.
@@ -193,12 +201,18 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
       .set("Content-Type", "application/json; charset=utf-8")
       .set("Content-Digest", `sha-256=:${matchingLostDigest}:`)
       .send(lostJson.toString("utf8"));
+    const matchingPatchDigest = await request(app)
+      .patch("/api/issues/LNG-1")
+      .set("Content-Type", "application/json; charset=utf-8")
+      .set("Content-Digest", `sha-256=:${matchingLostDigest}:`)
+      .send(lostJson.toString("utf8"));
     actorType = "board";
 
     expect(missingDigest.status).toBe(400);
     expect(nonUtf8Charset.status).toBe(428);
     expect(mismatchedDigest.status).toBe(400);
     expect(matchingDigest.status).toBe(422);
+    expect(matchingPatchDigest.status).toBe(422);
     const comments = await request(app).get("/api/issues/LNG-1/comments").query({ order: "asc" });
     expect(comments.body).toHaveLength(1);
     expect(comments.body[0]?.body).toBe(firstReply);
@@ -276,6 +290,6 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
     expect(heartbeatContextRes.status, JSON.stringify(heartbeatContextRes.body)).toBe(200);
     expect(heartbeatContextRes.body.issue.title).toBe(title);
     expect(heartbeatContextRes.body.issue.description).toBe(description);
-    expect(heartbeatContextRes.body.commentCursor.totalComments).toBe(2);
+    expect(heartbeatContextRes.body.commentCursor.totalComments).toBe(3);
   });
 });

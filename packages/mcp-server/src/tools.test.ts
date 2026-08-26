@@ -88,7 +88,7 @@ describe("paperclip MCP tools", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockJsonResponse({
         kind: "request_confirmation",
-        payload: { detailsMarkdown, acceptLabel, rejectLabel },
+        payload: { detailsMarkdown, acceptLabel, rejectLabel, steps: [{ message: "Первый шаг" }] },
       }, 201))
       .mockResolvedValueOnce(mockJsonResponse({ decision: { inputValues: { customField } } }));
     vi.stubGlobal("fetch", fetchMock);
@@ -97,7 +97,7 @@ describe("paperclip MCP tools", () => {
       body: {
         kind: "request_confirmation",
         idempotencyKey: "run:confirmation",
-        payload: { version: 1, detailsMarkdown, acceptLabel, rejectLabel },
+        payload: { version: 1, detailsMarkdown, acceptLabel, rejectLabel, steps: [{ message: "Первый шаг" }] },
       },
     })).resolves.toBeTruthy();
     await expect(makeClient().requestJson("POST", "/decisions/decision-1/decide", {
@@ -110,6 +110,18 @@ describe("paperclip MCP tools", () => {
 
     await expect(makeClient().requestJson("POST", "/decisions/decision-1/decide", {
       body: { optionId: "approve", inputValues: { customField: "\u041a\u0438\u0440\u0438\u043b\u043b\u0438\u0446\u0430" } },
+    })).rejects.toBeInstanceOf(PaperclipApiReadbackMismatchError);
+  });
+
+  it("rejects a structurally swapped MCP interaction text readback", async () => {
+    const title = "Заголовок";
+    const prompt = "Подтвердите действие";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockJsonResponse({
+      interaction: { title: prompt, payload: { prompt: title, steps: ["один", "два"] } },
+    }, 201)));
+
+    await expect(makeClient().requestJson("POST", "/issues/PAP-1135/interactions", {
+      body: { kind: "request_confirmation", title, payload: { prompt, steps: ["один", "два"] } },
     })).rejects.toBeInstanceOf(PaperclipApiReadbackMismatchError);
   });
 

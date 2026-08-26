@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { IncomingMessage } from "node:http";
 import type { Request, RequestHandler } from "express";
 import { badRequest } from "../errors.js";
 
@@ -28,12 +29,12 @@ export const agentTextMutationContentType: RequestHandler = (req, res, next) => 
  * input with U+FFFD, which makes a matching digest insufficient evidence that
  * text was safe to persist.
  */
-export function captureAndValidateAgentTextMutationBody(req: Request, rawBody: Uint8Array): void {
+export function captureAndValidateAgentTextMutationBody(req: IncomingMessage, rawBody: Uint8Array): void {
   // body-parser exposes a Buffer backed by ArrayBufferLike. Copying it into a
   // plain Buffer keeps the exact bytes while avoiding an unsafe generic cast
   // at the Express verifier boundary.
   const exactBytes = Buffer.from(rawBody);
-  (req as Request & { rawBody?: Buffer }).rawBody = exactBytes;
+  (req as IncomingMessage & { rawBody?: Buffer }).rawBody = exactBytes;
   if (!isAgentJsonMutation(req)) return;
 
   try {
@@ -65,12 +66,11 @@ export const agentTextMutationIntegrity: RequestHandler = (req, res, next) => {
   return next();
 };
 
-function isAgentJsonMutation(req: Request): boolean {
-  const contentType = req.header("content-type");
-  return req.actor?.type === "agent"
-    && ["POST", "PATCH"].includes(req.method)
-    && typeof contentType === "string"
-    && JSON_CONTENT_TYPE.test(contentType);
+function isAgentJsonMutation(req: IncomingMessage): boolean {
+  const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : undefined;
+  const actor = (req as IncomingMessage & { actor?: { type?: string } }).actor;
+  if (actor?.type !== "agent" || (req.method !== "POST" && req.method !== "PATCH") || !contentType) return false;
+  return JSON_CONTENT_TYPE.test(contentType);
 }
 
 function containsTextCorruptionMarker(value: unknown): boolean {

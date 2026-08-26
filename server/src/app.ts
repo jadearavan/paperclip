@@ -1,5 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
-import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -327,7 +327,7 @@ export async function createApp(
 ) {
   const app = express();
   app.locals.paperclipDb = db;
-  const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
+  const captureRawBody = (req: IncomingMessage, _res: ServerResponse, buf: Buffer) => {
     captureAndValidateAgentTextMutationBody(req, buf);
   };
 

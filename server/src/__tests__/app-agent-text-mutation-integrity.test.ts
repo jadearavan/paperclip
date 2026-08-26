@@ -199,6 +199,7 @@ describeEmbeddedPostgres("production createApp agent text mutation integrity", (
       nativeIssueId: issueId,
       responsibleUserId: userId,
       status: "running",
+      contextSnapshot: { issueId },
       startedAt: new Date(),
     });
 

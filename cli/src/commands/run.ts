@@ -20,6 +20,7 @@ import { assertForegroundRunAllowed } from "../services/service-manager.js";
 import { removeRuntimeInfoForPid, writeRuntimeInfo } from "../runtime-info.js";
 import { printUpdateNotice } from "../update-notice.js";
 import { ensureWorktreeSeeded } from "./worktree.js";
+import { runWithWindowsSupervisor } from "./windows-run-supervisor.js";
 
 interface RunOptions {
   config?: string;
@@ -28,6 +29,7 @@ interface RunOptions {
   yes?: boolean;
   bind?: "loopback" | "lan" | "tailnet";
   force?: boolean;
+  supervisedChild?: boolean;
 }
 
 interface StartedServer {
@@ -40,6 +42,14 @@ interface StartedServer {
 export async function runCommand(opts: RunOptions): Promise<void> {
   const instanceId = resolvePaperclipInstanceId(opts.instance);
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+  if (
+    process.platform === "win32"
+    && !opts.supervisedChild
+    && process.env.PAPERCLIP_SERVICE_MANAGED !== "1"
+  ) {
+    await runWithWindowsSupervisor(instanceId);
+    return;
+  }
   await assertForegroundRunAllowed(instanceId, opts.force);
 
   const homeDir = resolvePaperclipHomeDir();
@@ -104,6 +114,19 @@ export async function runCommand(opts: RunOptions): Promise<void> {
     startedAt: new Date().toISOString(),
   });
   process.once("exit", () => removeRuntimeInfoForPid(process.pid, instanceId));
+  // Windows parent supervision uses IPC rather than SIGTERM so the child
+  // reaches the server's ordered shutdown path before any forced fallback.
+  if (process.send) {
+    process.on("message", (message: unknown) => {
+      if (
+        message
+        && typeof message === "object"
+        && (message as { type?: unknown }).type === "paperclip:graceful-shutdown"
+      ) {
+        process.emit("SIGTERM");
+      }
+    });
+  }
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");

@@ -280,7 +280,6 @@ describeEmbeddedPostgres("production createApp agent text mutation integrity", (
   });
 
   it("persists valid multilingual UTF-8 through PATCH and returns the exact readback", async () => {
-    actorState.type = "board";
     const expectedDescription = "\u041A\u0438\u0440\u0438\u043B\u043B\u0438\u0446\u0430, \u4E2D\u6587, \u65E5\u672C\u8A9E, \u0939\u093F\u0928\u094D\u0926\u0940";
     const description = "Кириллица, 中文, 日本語, हिन्दी";
     void description;

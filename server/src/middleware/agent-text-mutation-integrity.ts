@@ -28,12 +28,16 @@ export const agentTextMutationContentType: RequestHandler = (req, res, next) => 
  * input with U+FFFD, which makes a matching digest insufficient evidence that
  * text was safe to persist.
  */
-export function captureAndValidateAgentTextMutationBody(req: Request, rawBody: Buffer): void {
-  (req as Request & { rawBody?: Buffer }).rawBody = rawBody;
+export function captureAndValidateAgentTextMutationBody(req: Request, rawBody: Uint8Array): void {
+  // body-parser exposes a Buffer backed by ArrayBufferLike. Copying it into a
+  // plain Buffer keeps the exact bytes while avoiding an unsafe generic cast
+  // at the Express verifier boundary.
+  const exactBytes = Buffer.from(rawBody);
+  (req as Request & { rawBody?: Buffer }).rawBody = exactBytes;
   if (!isAgentJsonMutation(req)) return;
 
   try {
-    new TextDecoder("utf-8", { fatal: true }).decode(rawBody);
+    new TextDecoder("utf-8", { fatal: true }).decode(exactBytes);
   } catch {
     throw badRequest("Agent JSON mutations must contain valid UTF-8 bytes.");
   }
@@ -55,8 +59,8 @@ export const agentTextMutationIntegrity: RequestHandler = (req, res, next) => {
   if (!expectedDigest || !rawBody || !safeEqual(expectedDigest, digest(rawBody))) {
     return res.status(400).json({ error: "Content-Digest must match the exact UTF-8 JSON request bytes." });
   }
-  if (containsUnicodeReplacementCharacter(req.body)) {
-    return res.status(422).json({ error: "JSON mutation contains the Unicode replacement character (U+FFFD)." });
+  if (containsTextCorruptionMarker(req.body)) {
+    return res.status(422).json({ error: "JSON mutation contains a text-encoding corruption marker (U+FFFD or four or more consecutive question marks)." });
   }
   return next();
 };
@@ -65,14 +69,14 @@ function isAgentJsonMutation(req: Request): boolean {
   const contentType = req.header("content-type");
   return req.actor?.type === "agent"
     && ["POST", "PATCH"].includes(req.method)
-    && Boolean(contentType)
+    && typeof contentType === "string"
     && JSON_CONTENT_TYPE.test(contentType);
 }
 
-function containsUnicodeReplacementCharacter(value: unknown): boolean {
-  if (typeof value === "string") return value.includes("\uFFFD");
-  if (Array.isArray(value)) return value.some(containsUnicodeReplacementCharacter);
-  if (value && typeof value === "object") return Object.values(value).some(containsUnicodeReplacementCharacter);
+function containsTextCorruptionMarker(value: unknown): boolean {
+  if (typeof value === "string") return value.includes("\uFFFD") || /\?{4,}/.test(value);
+  if (Array.isArray(value)) return value.some(containsTextCorruptionMarker);
+  if (value && typeof value === "object") return Object.values(value).some(containsTextCorruptionMarker);
   return false;
 }
 

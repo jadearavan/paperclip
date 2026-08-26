@@ -38,6 +38,7 @@ import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { companyGovernancePolicyService } from "./company-governance-policy.js";
 
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -60,6 +61,7 @@ export function companyService(db: Db) {
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
   const builtInAgents = builtInAgentService(db);
+  const governancePolicies = companyGovernancePolicyService(db);
 
   type CompanyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -276,6 +278,7 @@ export function companyService(db: Db) {
 
     create: async (data: typeof companies.$inferInsert) => {
       const created = await createCompanyWithUniquePrefix(data);
+      await governancePolicies.ensureDefault(created.id);
       await environmentsSvc.ensureLocalEnvironment(created.id);
       await builtInAgents.autoProvisionBundledAgents(created.id);
       const row = await getCompanyQuery(db)

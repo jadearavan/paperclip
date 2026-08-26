@@ -15,6 +15,14 @@ export {
   type NativeRunTerminalState,
 } from "./types/native-finalization.js";
 export {
+  governancePolicyBindingSchema,
+  governancePolicyDocumentSchema,
+  replaceGovernancePolicySchema,
+  type GovernancePolicyBinding,
+  type GovernancePolicyDocument,
+  type ReplaceGovernancePolicy,
+} from "./validators/company-governance-policy.js";
+export {
   decisionEffectStalenessSchema,
   decisionOptionStyleSchema,
   commentOnIssueDecisionEffectSchema,

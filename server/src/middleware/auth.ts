@@ -17,6 +17,7 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { companyGovernancePolicyService } from "../services/company-governance-policy.js";
 
 const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
 const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
@@ -567,6 +568,11 @@ export async function resolveCloudTenantActor(
     .onConflictDoNothing({
       target: companies.id,
     });
+
+  // Cloud tenant provisioning bypasses companyService.create. Seed the same
+  // immutable revision here so no newly materialized tenant can run agents
+  // without the company overlay.
+  if (shouldSync) await companyGovernancePolicyService(db).ensureDefault(companyId);
 
   if (shouldSync && paperclipCompanyName) {
     await repairCloudTenantCompanyName(db, {

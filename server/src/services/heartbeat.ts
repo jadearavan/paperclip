@@ -105,6 +105,7 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { companyGovernancePolicyService, GOVERNANCE_POLICY_PRECEDENCE } from "./company-governance-policy.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -16214,6 +16215,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             startedAt: meta.startedAt,
           });
         };
+        const adapterContext = { ...context };
+        const governancePolicy = await companyGovernancePolicyService(db).resolveForHeartbeat(agent.companyId, agent.id);
+        if (governancePolicy) {
+          // The snapshot is deliberately independent of the managed role bundle.
+          // It is stored before invocation and the adapter receives the exact body
+          // with the revision/hash that operators can read back later.
+          const governanceEvidence = {
+            policyId: governancePolicy.policyId,
+            revisionId: governancePolicy.revisionId,
+            revision: governancePolicy.revision,
+            sha256: governancePolicy.sha256,
+            bindingId: governancePolicy.bindingId,
+            delivery: governancePolicy.delivery,
+            channel: agent.adapterType === "codex_local" ? "developer_instructions" : "unsupported",
+            precedence: GOVERNANCE_POLICY_PRECEDENCE,
+          };
+          // Keep durable evidence in the canonical run context. The adapter gets
+          // the full body below, while later lifecycle writes retain only this
+          // immutable revision metadata.
+          context.companyGovernancePolicy = governanceEvidence;
+          adapterContext.companyGovernancePolicy = governancePolicy;
+          await db.update(heartbeatRuns).set({
+            contextSnapshot: context,
+            updatedAt: new Date(),
+          }).where(eq(heartbeatRuns.id, run.id));
+          if (governancePolicy.delivery === "required" && agent.adapterType !== "codex_local") {
+            throw new HttpError(422, "Required governance policy delivery is unsupported by this adapter", {
+              code: "governance_policy_unsupported_delivery",
+            });
+          }
+        }
         if (runtimeResolution.kind === "native") {
           if (!issueRef) throw new Error("paperclip_runner_issue_required");
           const native = await prepareNativeHeartbeatRun({
@@ -16262,7 +16294,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             onSpawn,
           });
         } else {
-          const adapterContext = { ...context };
           const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
             db,
             agent,

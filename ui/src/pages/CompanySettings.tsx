@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
@@ -9,6 +9,7 @@ import {
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
+import { companyGovernancePolicyApi } from "../api/companyGovernancePolicy";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -47,6 +48,11 @@ export function CompanySettings() {
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
+  const governancePolicyQuery = useQuery({
+    queryKey: queryKeys.companyGovernancePolicy.detail(selectedCompanyId ?? ""),
+    queryFn: () => companyGovernancePolicyApi.get(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
 
   // Sync local state from selected company
   useEffect(() => {
@@ -406,6 +412,45 @@ export function CompanySettings() {
       />
 
       <InstanceGeneralSettings embedded />
+
+      <div className="space-y-4" data-testid="company-governance-policy-readback">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Company policy overlay
+        </div>
+        <div className="space-y-2 rounded-md border border-border px-4 py-3 text-sm">
+          {governancePolicyQuery.isLoading ? (
+            <span className="text-muted-foreground">Loading policy readback…</span>
+          ) : governancePolicyQuery.isError ? (
+            <span className="text-destructive">Unable to load policy readback.</span>
+          ) : governancePolicyQuery.data?.active ? (
+            <>
+              <p>
+                Active revision <span className="font-medium">{governancePolicyQuery.data.active.revision}</span>
+                {" · SHA-256 "}<code className="text-xs">{governancePolicyQuery.data.active.sha256}</code>
+              </p>
+              <p className={governancePolicyQuery.data.drift?.detected ? "text-destructive" : "text-muted-foreground"}>
+                {governancePolicyQuery.data.drift?.detected
+                  ? "Drift detected: stored policy body does not match its revision hash."
+                  : `No drift. ${governancePolicyQuery.data.targets.filter((target) => target.included).length} agent target(s) receive this overlay.`}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Delivery precedence: company policy → role instructions → task context → skills.
+              </p>
+              <ul className="space-y-1 text-xs text-muted-foreground">
+                {governancePolicyQuery.data.targets.map((target) => (
+                  <li key={target.agentId}>
+                    {target.name} ({target.role ?? "no role"}): {target.included
+                      ? `${target.delivery} via ${target.bindingId}`
+                      : "not targeted"}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <span className="text-muted-foreground">No company policy overlay is configured.</span>
+          )}
+        </div>
+      </div>
 
       {/* Danger Zone */}
       <div className="space-y-4">

@@ -253,6 +253,23 @@ describe("Windows foreground run supervision", () => {
     expect(calls).toBe(1);
   });
 
+  it("retains shutdown ownership after a failed stop and allows a later retry", async () => {
+    let stopAttempts = 0;
+    let releaseCalls = 0;
+    const shutdown = createIdempotentShutdown(async () => {
+      stopAttempts += 1;
+      if (stopAttempts === 1) throw new Error("child process tree is still alive");
+      releaseCalls += 1;
+    });
+
+    await expect(shutdown()).rejects.toThrow("child process tree is still alive");
+    expect(releaseCalls).toBe(0);
+
+    await expect(shutdown()).resolves.toBeUndefined();
+    expect(stopAttempts).toBe(2);
+    expect(releaseCalls).toBe(1);
+  });
+
   it("retries a failed child stop without starting a second server", async () => {
     const children = [new FakeChild(101), new FakeChild(202)];
     let nextChild = 0;

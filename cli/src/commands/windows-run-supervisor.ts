@@ -32,6 +32,10 @@ type SupervisedChild = {
   send?: (message: { type: string }) => unknown;
 };
 
+export const WINDOWS_RUN_ACCEPTANCE_HARNESS_ENV = "PAPERCLIP_WINDOWS_RUN_ACCEPTANCE_HARNESS";
+export const WINDOWS_RUN_ACCEPTANCE_CLOSE_LISTENER = "paperclip:acceptance:close-listener";
+export const WINDOWS_RUN_ACCEPTANCE_SHUTDOWN = "paperclip:acceptance:shutdown";
+
 type WindowsRunSupervisorOptions = {
   instanceId: string;
   startChild: () => SupervisedChild;
@@ -151,8 +155,17 @@ export class WindowsRunSupervisor {
     // observed `stopping`; otherwise it can launch an orphan after shutdown.
     if (this.restarting) await this.restarting;
     const child = this.child;
-    this.child = null;
-    if (child) await this.options.stopChild(child);
+    if (!child) return;
+    // Keep the child reference until termination is proven. If stopping the
+    // process tree fails, the foreground owner must retain both the child and
+    // its instance lock so a later invocation cannot start a competing server.
+    await this.options.stopChild(child);
+    if (this.child === child) this.child = null;
+  }
+
+  sendToChild(message: { type: string }): boolean {
+    if (!this.child?.send) return false;
+    return this.child.send(message) !== false;
   }
 
   private async restart(reason: "listener_loss" | "server_child_exit", oldPid: number): Promise<void> {
@@ -275,6 +288,61 @@ async function waitForChildExit(child: SupervisedChild, timeoutMs = DEFAULT_CHIL
   });
 }
 
+async function listWindowsOwnedProcessPids(rootPid: number, instanceRoot: string): Promise<number[]> {
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    "$rows = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine",
+    "$rows | ConvertTo-Json -Compress",
+  ].join("; ");
+  const { stdout } = await execFileAsync("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    command,
+  ], { windowsHide: true, timeout: 30_000 });
+  const parsed = JSON.parse(stdout.replace(/^\uFEFF/, "").trim() || "[]") as
+    | { ProcessId: number; ParentProcessId: number; Name?: string; CommandLine?: string }
+    | Array<{ ProcessId: number; ParentProcessId: number; Name?: string; CommandLine?: string }>;
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  const descendants: number[] = [];
+  const parents = [rootPid];
+  for (let index = 0; index < parents.length; index += 1) {
+    const parentPid = parents[index];
+    for (const row of rows) {
+      const pid = Number(row.ProcessId);
+      if (Number(row.ParentProcessId) !== parentPid || !Number.isInteger(pid) || pid <= 0) continue;
+      if (descendants.includes(pid)) continue;
+      descendants.push(pid);
+      parents.push(pid);
+    }
+  }
+  const instanceNeedle = instanceRoot.toLowerCase();
+  for (const row of rows) {
+    const pid = Number(row.ProcessId);
+    if (
+      String(row.Name ?? "").toLowerCase() === "postgres.exe"
+      && String(row.CommandLine ?? "").toLowerCase().includes(instanceNeedle)
+      && Number.isInteger(pid)
+      && pid > 0
+      && !descendants.includes(pid)
+    ) {
+      descendants.push(pid);
+    }
+  }
+  return descendants;
+}
+
+async function waitForPidsExit(pids: readonly number[], timeoutMs: number): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs;
+  let survivors = pids.filter(isProcessAlive);
+  while (survivors.length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    survivors = survivors.filter(isProcessAlive);
+  }
+  return survivors;
+}
+
 export async function stopWindowsServerChild(child: SupervisedChild): Promise<void> {
   if (!child.pid) return;
   const gracefulExit = waitForChildExit(child);
@@ -288,6 +356,23 @@ export async function stopWindowsServerChild(child: SupervisedChild): Promise<vo
   await execFileAsync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"]).catch(() => undefined);
   if (!(await waitForChildExit(child, 5_000))) {
     throw new Error(`Timed out stopping Paperclip server child ${child.pid}.`);
+  }
+}
+
+/** Stop the server and prove that every process it owned has exited. */
+export async function stopWindowsServerTree(child: SupervisedChild, instanceId: string): Promise<void> {
+  const descendants = child.pid
+    ? await listWindowsOwnedProcessPids(child.pid, resolvePaperclipInstanceRoot(instanceId))
+    : [];
+  await stopWindowsServerChild(child);
+
+  let survivors = await waitForPidsExit(descendants, 10_000);
+  for (const pid of survivors) {
+    await execFileAsync("taskkill.exe", ["/pid", String(pid), "/t", "/f"]).catch(() => undefined);
+  }
+  survivors = await waitForPidsExit(survivors, 5_000);
+  if (survivors.length > 0) {
+    throw new Error(`Timed out stopping Paperclip server descendants: ${survivors.join(", ")}.`);
   }
 }
 
@@ -313,7 +398,17 @@ export function supervisedRunChildArgs(options: SupervisedRunOptions): string[] 
 export function createIdempotentShutdown(action: () => Promise<void>): () => Promise<void> {
   let shutdownPromise: Promise<void> | null = null;
   return () => {
-    if (!shutdownPromise) shutdownPromise = action();
+    if (!shutdownPromise) {
+      let attempt: Promise<void>;
+      attempt = action().catch((error) => {
+        // A failed stop retains ownership and may be retried by a later signal.
+        // Clear only the cached transaction; concurrent signals still share the
+        // same attempt and can never release the lock independently.
+        if (shutdownPromise === attempt) shutdownPromise = null;
+        throw error;
+      });
+      shutdownPromise = attempt;
+    }
     return shutdownPromise;
   };
 }
@@ -325,34 +420,72 @@ export function createIdempotentShutdown(action: () => Promise<void>): () => Pro
  */
 export async function runWithWindowsSupervisor(instanceId: string, options: SupervisedRunOptions): Promise<void> {
   const releaseLock = acquireWindowsRunSupervisorLock(instanceId);
+  const acceptanceHarnessEnabled = process.env[WINDOWS_RUN_ACCEPTANCE_HARNESS_ENV] === "1";
   const supervisor = new WindowsRunSupervisor({
     instanceId,
-    startChild: () => spawn(process.execPath, supervisedRunChildArgs(options), {
-      cwd: process.cwd(),
-      env: { ...process.env, PAPERCLIP_WINDOWS_RUN_SUPERVISED_CHILD: "1" },
-      stdio: ["inherit", "inherit", "inherit", "ipc"],
-    }),
+    startChild: () => {
+      // The native acceptance harness executes the TypeScript CLI through
+      // Node's loader. Preserve those Node arguments for its real supervised
+      // child without changing packaged production invocations.
+      const nodeArgs = acceptanceHarnessEnabled
+        ? [...process.execArgv, ...supervisedRunChildArgs(options)]
+        : supervisedRunChildArgs(options);
+      const child = spawn(process.execPath, nodeArgs, {
+        cwd: process.cwd(),
+        env: { ...process.env, PAPERCLIP_WINDOWS_RUN_SUPERVISED_CHILD: "1" },
+        stdio: ["inherit", "inherit", "inherit", "ipc"],
+      });
+      if (acceptanceHarnessEnabled && process.send) {
+        child.on("message", (message) => process.send?.(message));
+        child.on("exit", (code, signal) => {
+          process.send?.({ type: "paperclip:acceptance:child-exit", code, signal });
+        });
+      }
+      return child;
+    },
     probeHealth: (pid) => probeRuntimeHealth(instanceId, pid),
-    stopChild: stopWindowsServerChild,
+    stopChild: (child) => stopWindowsServerTree(child, instanceId),
     log: (message) => console.error(message),
+    // First-run migrations in a source checkout can exceed the production
+    // startup grace. The acceptance harness must observe that same child
+    // becoming healthy before it injects listener loss.
+    startupGraceMs: acceptanceHarnessEnabled ? 240_000 : undefined,
   });
 
   let interval: NodeJS.Timeout | null = null;
   const shutdown = createIdempotentShutdown(async () => {
     if (interval) clearInterval(interval);
-    try {
-      await supervisor.stop();
-    } finally {
-      releaseLock();
-    }
+    await supervisor.stop();
+    releaseLock();
   });
-  const onSignal = () => { void shutdown().finally(() => process.exit(0)); };
+  const onSignal = () => {
+    void shutdown().then(
+      () => process.exit(0),
+      (error) => {
+        console.error(
+          `[paperclipai run] Windows supervisor shutdown failed; retaining instance ownership: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+    );
+  };
+  const onParentMessage = (message: unknown) => {
+    if (!acceptanceHarnessEnabled || !message || typeof message !== "object") return;
+    const type = (message as { type?: unknown }).type;
+    if (type === WINDOWS_RUN_ACCEPTANCE_CLOSE_LISTENER) {
+      if (!supervisor.sendToChild({ type: WINDOWS_RUN_ACCEPTANCE_CLOSE_LISTENER })) {
+        process.send?.({ type: "paperclip:acceptance:error", message: "server child has no IPC channel" });
+      }
+      return;
+    }
+    if (type === WINDOWS_RUN_ACCEPTANCE_SHUTDOWN) onSignal();
+  };
 
   // Keep both handlers installed until the one idempotent shutdown transaction
   // completes. A repeated signal must not restore Node's default termination
   // behavior while the supervised child may still own the instance port.
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  if (acceptanceHarnessEnabled) process.on("message", onParentMessage);
   try {
     supervisor.start();
     interval = setInterval(() => { void supervisor.tick(); }, 2_000);
